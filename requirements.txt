@@ -1,0 +1,8 @@
+fastapi[standard]
+langchain==1.2.13
+langchain_litellm
+pandas
+pydantic
+python-dotenv
+shiny
+uvicorn
