@@ -79,9 +79,11 @@ def transactions_lookup(conn, year_start, year_end, month_start, month_end, day_
     return json.dumps(rows)
 
 # action: ["buy", "sell", "absolute"]
-def total_traded_by_ticker(conn, ticker, include_risky, use_volume, action):
-    if ticker not in return_unique_tickers(conn):
-        return 0
+def total_traded_per_ticker(conn, tickers, include_risky, use_volume, action):
+    if not tickers:
+        tickers = return_unique_tickers(conn)
+    if not tickers:
+        return json.dumps({})
 
     risky_clause = "" if include_risky else " AND is_risky = 0"
     sum_clause = "SUM(quantity)" if use_volume else "SUM(quantity * price)"
@@ -93,34 +95,47 @@ def total_traded_by_ticker(conn, ticker, include_risky, use_volume, action):
     else:
         action_clause = ""
 
+    placeholders = ",".join("?" * len(tickers))
     cursor = conn.cursor()
     cursor.execute(
-        f"SELECT {sum_clause} "
+        f"SELECT ticker, {sum_clause} AS total "
         f"FROM transactions "
-        f"WHERE ticker = ? "
-        f"AND soft_delete = 0{risky_clause}{action_clause}",
-        (ticker,)
+        f"WHERE ticker IN ({placeholders}) "
+        f"AND soft_delete = 0{risky_clause}{action_clause} "
+        f"GROUP BY ticker",
+        tickers
     )
-    return cursor.fetchone()[0] or 0
-
-def total_traded_per_ticker(conn, tickers, include_risky, use_volume, action):
-    if not tickers:
-        tickers = return_unique_tickers(conn)
-    return json.dumps({t: total_traded_by_ticker(conn, t, include_risky, use_volume, action) for t in tickers})
-
-def net_position_by_ticker(conn, ticker, include_risky, use_volume):
-    buys = total_traded_by_ticker(conn, ticker, include_risky, use_volume, "buy")
-    sells = total_traded_by_ticker(conn, ticker, include_risky, use_volume, "sell")
-    return buys - sells
+    totals = {row["ticker"]: row["total"] or 0 for row in cursor.fetchall()}
+    return json.dumps({t: totals.get(t, 0) for t in tickers})
 
 def net_position_per_ticker(conn, tickers, include_risky, use_volume):
     if not tickers:
         tickers = return_unique_tickers(conn)
-    return json.dumps({t: net_position_by_ticker(conn, t, include_risky, use_volume) for t in tickers})
+    if not tickers:
+        return json.dumps({})
 
-def total_transactions_by_trader_id(conn, trader_id, include_risky, action):
-    if trader_id not in return_unique_trader_ids(conn):
-        return 0
+    risky_clause = "" if include_risky else " AND is_risky = 0"
+    value_expr = "quantity" if use_volume else "quantity * price"
+
+    placeholders = ",".join("?" * len(tickers))
+    cursor = conn.cursor()
+    cursor.execute(
+        f"SELECT ticker, "
+        f"SUM(CASE WHEN action = 'BUY' THEN {value_expr} ELSE -{value_expr} END) AS net "
+        f"FROM transactions "
+        f"WHERE ticker IN ({placeholders}) "
+        f"AND soft_delete = 0{risky_clause} "
+        f"GROUP BY ticker",
+        tickers
+    )
+    nets = {row["ticker"]: row["net"] or 0 for row in cursor.fetchall()}
+    return json.dumps({t: nets.get(t, 0) for t in tickers})
+
+def total_transactions_per_trader_id(conn, trader_ids, include_risky, action):
+    if not trader_ids:
+        trader_ids = return_unique_trader_ids(conn)
+    if not trader_ids:
+        return json.dumps({})
 
     risky_clause = "" if include_risky else " AND is_risky = 0"
 
@@ -131,19 +146,18 @@ def total_transactions_by_trader_id(conn, trader_id, include_risky, action):
     else:
         action_clause = ""
 
+    placeholders = ",".join("?" * len(trader_ids))
     cursor = conn.cursor()
     cursor.execute(
-        f"SELECT COUNT(*) "
+        f"SELECT trader_id, COUNT(*) AS total "
         f"FROM transactions "
-        f"WHERE trader_id = ? AND soft_delete = 0{risky_clause}{action_clause}",
-        (trader_id,)
+        f"WHERE trader_id IN ({placeholders}) "
+        f"AND soft_delete = 0{risky_clause}{action_clause} "
+        f"GROUP BY trader_id",
+        trader_ids
     )
-    return cursor.fetchone()[0] or 0
-
-def total_transactions_per_trader_id(conn, trader_ids, include_risky, action):
-    if not trader_ids:
-        trader_ids = return_unique_trader_ids(conn)
-    return json.dumps({t: total_transactions_by_trader_id(conn, t, include_risky, action) for t in trader_ids})
+    totals = {row["trader_id"]: row["total"] or 0 for row in cursor.fetchall()}
+    return json.dumps({t: totals.get(t, 0) for t in trader_ids})
 
 def get_hourly_data(conn, ticker, is_buy, include_risky):
     risky_clause  = "" if include_risky else " AND is_risky = 0"
